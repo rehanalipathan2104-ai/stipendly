@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Search, SlidersHorizontal, ShieldCheck, ShieldAlert, X, Inbox } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { api } from '@/lib/api';
 import type { Internship } from '@/lib/types';
 import InternshipCard from '@/components/InternshipCard';
 import { useRouter } from '@/lib/router';
@@ -20,14 +20,13 @@ export default function BrowsePage() {
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      let q = supabase
-        .from('internships')
-        .select('*')
-        .eq('status', 'active')
-        .order('created_at', { ascending: false });
-      const { data, error } = await q;
-      if (error) console.error(error);
-      setInternships((data as Internship[]) ?? []);
+      try {
+        const { internships: data } = await api.getInternships({ status: 'active' });
+        setInternships(data);
+      } catch (err) {
+        console.error(err);
+        setInternships([]);
+      }
       setLoading(false);
     };
     load();
@@ -85,7 +84,6 @@ export default function BrowsePage() {
       </div>
 
       <div className="grid lg:grid-cols-[220px_1fr] gap-6">
-        {/* Filters */}
         <aside className="space-y-4">
           <div className="card p-4">
             <div className="flex items-center justify-between mb-3">
@@ -135,7 +133,6 @@ export default function BrowsePage() {
           </div>
         </aside>
 
-        {/* Results */}
         <div>
           {loading ? (
             <div className="grid sm:grid-cols-2 gap-4">

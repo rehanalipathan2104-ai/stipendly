@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { FileText, Send, Clock, CheckCircle2, XCircle, ChevronRight, Loader2 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { FileText, Send, Clock, CheckCircle2, XCircle, ChevronRight } from 'lucide-react';
+import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useRouter } from '@/lib/router';
 import type { Application, Internship } from '@/lib/types';
@@ -16,12 +16,13 @@ export default function StudentDashboardPage() {
     const load = async () => {
       if (!profile) return;
       setLoading(true);
-      const { data } = await supabase
-        .from('applications')
-        .select('*, internship:internships(*)')
-        .eq('student_id', profile.id)
-        .order('created_at', { ascending: false });
-      setApps((data as (Application & { internship?: Internship })[]) ?? []);
+      try {
+        const { applications } = await api.getApplications({ student_id: profile.id });
+        setApps(applications as (Application & { internship?: Internship })[]);
+      } catch (err) {
+        console.error(err);
+        setApps([]);
+      }
       setLoading(false);
     };
     load();

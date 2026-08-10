@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Flag, Loader2, Send, ShieldQuestion } from 'lucide-react';
 import Modal from './Modal';
-import { supabase } from '@/lib/supabase';
+import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { analyzeReport, FLAG_DEFS } from '@/lib/ai';
 import { classNames, severityColor } from '@/lib/utils';
@@ -28,29 +28,25 @@ export default function ReportModal({ open, onClose, internshipId, internshipTit
     setSubmitting(true);
     setError(null);
     const ai = preview ? { flags: preview.flags, summary: preview.summary } : null;
-    const { error: insErr } = await supabase.from('reports').insert({
-      internship_id: internshipId,
-      reporter_id: profile.id,
-      flag_code: flagCode,
-      details: details.trim(),
-      ai_analysis: ai,
-    });
-    if (insErr) {
-      setError(insErr.message);
-      setSubmitting(false);
-      return;
-    }
-    const def = FLAG_DEFS.find((f) => f.code === flagCode);
-    if (def) {
-      await supabase.from('honour_events').insert({
-        internship_id: internshipId,
-        delta: -def.points,
-        reason: def.label,
-        severity: def.severity,
-        source: 'report',
+    try {
+      await api.createReport(internshipId, {
+        flag_code: flagCode,
+        details: details.trim(),
+        ai_analysis: ai,
       });
+      const def = FLAG_DEFS.find((f) => f.code === flagCode);
+      if (def) {
+        await api.createHonourEvent(internshipId, {
+          delta: -def.points,
+          reason: def.label,
+          severity: def.severity,
+          source: 'report',
+        });
+      }
+      setSuccess(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to submit report');
     }
-    setSuccess(true);
     setSubmitting(false);
   };
 

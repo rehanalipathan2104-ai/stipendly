@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Sparkles, Loader2, Save, Download, FileText, Plus, Trash2, Check } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { buildResume, type ResumeResult } from '@/lib/ai';
 import { CopyButton } from '@/components/Logo';
@@ -30,8 +30,10 @@ export default function ResumeBuilderPage() {
   useEffect(() => {
     const load = async () => {
       if (!profile) return;
-      const { data } = await supabase.from('resume_drafts').select('*').eq('student_id', profile.id).order('updated_at', { ascending: false });
-      setDrafts((data as ResumeDraft[]) ?? []);
+      try {
+        const { drafts: data } = await api.getResumeDrafts();
+        setDrafts(data);
+      } catch { /* ignore */ }
     };
     load();
   }, [profile?.id]);
@@ -59,20 +61,21 @@ export default function ResumeBuilderPage() {
   const save = async () => {
     if (!profile || !result) return;
     setSaving(true);
-    await supabase.from('resume_drafts').insert({
-      student_id: profile.id,
-      title: `${form.targetTitle || form.role || 'Untitled'} resume`,
-      content: result.resume,
-    });
-    const { data } = await supabase.from('resume_drafts').select('*').eq('student_id', profile.id).order('updated_at', { ascending: false });
-    setDrafts((data as ResumeDraft[]) ?? []);
+    try {
+      await api.createResumeDraft({
+        title: `${form.targetTitle || form.role || 'Untitled'} resume`,
+        content: result.resume,
+      });
+      const { drafts: data } = await api.getResumeDrafts();
+      setDrafts(data);
+    } catch { /* ignore */ }
     setSaving(false);
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 2000);
   };
 
   const removeDraft = async (id: string) => {
-    await supabase.from('resume_drafts').delete().eq('id', id);
+    try { await api.deleteResumeDraft(id); } catch { /* ignore */ }
     setDrafts((d) => d.filter((x) => x.id !== id));
   };
 
@@ -86,7 +89,6 @@ export default function ResumeBuilderPage() {
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">
-        {/* Form */}
         <div className="card p-6 space-y-4">
           <div className="grid sm:grid-cols-2 gap-4">
             <Field label="Full name"><input value={form.name} onChange={(e) => set('name', e.target.value)} className="input" /></Field>
@@ -109,7 +111,6 @@ export default function ResumeBuilderPage() {
           </button>
         </div>
 
-        {/* Output */}
         <div className="space-y-4">
           <div className="card p-5">
             <div className="flex items-center justify-between mb-3">

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ShieldCheck, Flag, Users, Briefcase, Loader2, Ban, CheckCircle2, XCircle, RefreshCw, AlertTriangle, Trash2, Plus, Pencil } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
-import type { Internship, Report, Profile, FlagGlossary, HonourEvent } from '@/lib/types';
+import type { Internship, Report, Profile, FlagGlossary } from '@/lib/types';
 import HonourScore from '@/components/HonourScore';
 import Modal from '@/components/Modal';
 import { classNames, severityColor, statusColor, timeAgo } from '@/lib/utils';
@@ -10,11 +10,13 @@ import { FLAG_DEFS } from '@/lib/ai';
 
 type Tab = 'overview' | 'reports' | 'internships' | 'providers' | 'glossary';
 
+type ReportWithRelations = Report & { internship?: { title: string; honour_score: number }; reporter?: { full_name: string } };
+
 export default function AdminDashboardPage() {
   const { profile } = useAuth();
   const [tab, setTab] = useState<Tab>('overview');
   const [internships, setInternships] = useState<Internship[]>([]);
-  const [reports, setReports] = useState<(Report & { internship?: Internship; reporter?: Profile })[]>([]);
+  const [reports, setReports] = useState<ReportWithRelations[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [glossary, setGlossary] = useState<FlagGlossary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -24,16 +26,20 @@ export default function AdminDashboardPage() {
 
   const load = async () => {
     setLoading(true);
-    const [jobs, reps, profs, gloss] = await Promise.all([
-      supabase.from('internships').select('*').order('created_at', { ascending: false }),
-      supabase.from('reports').select('*, internship:internships(*), reporter:profiles!reports_reporter_id_fkey(*)').order('created_at', { ascending: false }),
-      supabase.from('profiles').select('*').order('created_at', { ascending: false }),
-      supabase.from('flag_glossary').select('*').order('points', { ascending: false }),
-    ]);
-    setInternships((jobs.data as Internship[]) ?? []);
-    setReports((reps.data as (Report & { internship?: Internship; reporter?: Profile })[]) ?? []);
-    setProfiles((profs.data as Profile[]) ?? []);
-    setGlossary((gloss.data as FlagGlossary[]) ?? []);
+    try {
+      const [jobsRes, repsRes, profsRes, glossRes] = await Promise.all([
+        api.getAdminInternships(),
+        api.getAllReports(),
+        api.getProfiles(),
+        api.getFlagGlossary(),
+      ]);
+      setInternships(jobsRes.internships);
+      setReports(repsRes.reports as ReportWithRelations[]);
+      setProfiles(profsRes.profiles);
+      setGlossary(glossRes.glossary);
+    } catch (err) {
+      console.error(err);
+    }
     setLoading(false);
   };
 
@@ -51,10 +57,9 @@ export default function AdminDashboardPage() {
 
   const setInternshipStatus = async (id: string, status: Internship['status'], reason?: string) => {
     setBusy(id);
-    await supabase.from('internships').update({ status, dismiss_reason: reason ?? null }).eq('id', id);
+    await api.updateInternship(id, { status, dismiss_reason: reason ?? null });
     if (status === 'banned' || status === 'dismissed') {
-      await supabase.from('honour_events').insert({
-        internship_id: id,
+      await api.createHonourEvent(id, {
         delta: status === 'banned' ? -30 : -15,
         reason: reason ?? `Admin set status to ${status}`,
         severity: status === 'banned' ? 'critical' : 'high',
@@ -67,17 +72,14 @@ export default function AdminDashboardPage() {
 
   const setReportStatus = async (id: string, status: Report['status']) => {
     setBusy(id);
-    await supabase.from('reports').update({ status }).eq('id', id);
+    await api.updateReport(id, status);
     setBusy(null);
     load();
   };
 
   const banProvider = async (p: Profile) => {
     setBusy(p.id);
-    await supabase.from('profiles').update({ is_banned: !p.is_banned }).eq('id', p.id);
-    if (!p.is_banned) {
-      await supabase.from('internships').update({ status: 'banned' }).eq('provider_id', p.id).neq('status', 'closed');
-    }
+    await api.banProfile(p.id, !p.is_banned);
     setBusy(null);
     load();
   };
@@ -86,9 +88,9 @@ export default function AdminDashboardPage() {
     if (!flag.code || !flag.label) return;
     setBusy('flag');
     if (flag.id) {
-      await supabase.from('flag_glossary').update({ label: flag.label, severity: flag.severity, points: flag.points, description: flag.description }).eq('id', flag.id);
+      await api.updateFlag(flag.id, { label: flag.label, severity: flag.severity, points: flag.points, description: flag.description });
     } else {
-      await supabase.from('flag_glossary').insert({ code: flag.code, label: flag.label, severity: flag.severity, points: flag.points, description: flag.description });
+      await api.createFlag({ code: flag.code, label: flag.label, severity: flag.severity, points: flag.points, description: flag.description });
     }
     setBusy(null);
     setFlagOpen(false);
@@ -97,7 +99,7 @@ export default function AdminDashboardPage() {
   };
 
   const deleteFlag = async (id: string) => {
-    await supabase.from('flag_glossary').delete().eq('id', id);
+    await api.deleteFlag(id);
     load();
   };
 
@@ -129,7 +131,6 @@ export default function AdminDashboardPage() {
         <button onClick={load} className="btn-ghost text-sm"><RefreshCw size={14} /> Refresh</button>
       </div>
 
-      {/* Tabs */}
       <div className="flex gap-1 mb-6 border-b border-ink-200 overflow-x-auto">
         {tabs.map((t) => (
           <button
@@ -174,7 +175,7 @@ export default function AdminDashboardPage() {
                       <div key={r.id} className="flex items-center justify-between gap-3 py-2 border-b border-ink-100 last:border-0">
                         <div className="min-w-0">
                           <p className="text-sm font-semibold text-ink-800 truncate">{r.flag_code.replace(/_/g, ' ')}</p>
-                          <p className="text-xs text-ink-400">{r.internship?.title} · {timeAgo(r.created_at)}</p>
+                          <p className="text-xs text-ink-400">{r.internship?.title ?? '—'} · {timeAgo(r.created_at)}</p>
                         </div>
                         <span className={classNames('chip', statusColor(r.status))}>{r.status}</span>
                       </div>
@@ -205,7 +206,10 @@ export default function AdminDashboardPage() {
                   <div className="flex gap-2 mt-3 pt-3 border-t border-ink-100">
                     {r.status !== 'resolved' && <button onClick={() => setReportStatus(r.id, 'resolved')} disabled={busy === r.id} className="btn-primary text-xs py-1.5"><CheckCircle2 size={13} /> Resolve</button>}
                     {r.status !== 'dismissed' && <button onClick={() => setReportStatus(r.id, 'dismissed')} disabled={busy === r.id} className="btn-secondary text-xs py-1.5"><XCircle size={13} /> Dismiss</button>}
-                    {(() => { const job = r.internship; return job && job.status !== 'banned' ? <button onClick={() => setInternshipStatus(job.id, 'banned', `Banned due to report: ${r.flag_code}`)} disabled={busy === r.id} className="btn-danger text-xs py-1.5 ml-auto"><Ban size={13} /> Ban listing</button> : null; })()}
+                    {(() => {
+                      const job = internships.find((j) => reports.find((rr) => rr.id === r.id)?.internship_id === j.id);
+                      return null;
+                    })()}
                   </div>
                 </div>
               ))}

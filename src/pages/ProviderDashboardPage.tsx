@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Plus, Briefcase, ShieldCheck, Loader2, Mail, Building2, CheckCircle2, XCircle, Users, RefreshCw } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useRouter } from '@/lib/router';
 import type { Internship, Application, Profile } from '@/lib/types';
@@ -11,31 +11,27 @@ export default function ProviderDashboardPage() {
   const { profile, refreshProfile } = useAuth();
   const { navigate } = useRouter();
   const [internships, setInternships] = useState<Internship[]>([]);
-  const [apps, setApps] = useState<Application[]>([]);
-  const [students, setStudents] = useState<Record<string, Profile>>({});
+  const [apps, setApps] = useState<(Application & { student?: Profile })[]>([]);
   const [loading, setLoading] = useState(true);
   const [verifying, setVerifying] = useState<string | null>(null);
-  const [companyForm, setCompanyForm] = useState({ company_name: '', website: '', domain: '' });
+  const [companyForm, setCompanyForm] = useState({ company_name: '', website: '' });
   const [savingProfile, setSavingProfile] = useState(false);
   const [selectedJob, setSelectedJob] = useState<Internship | null>(null);
 
   const load = async () => {
     if (!profile) return;
     setLoading(true);
-    const { data: jobs } = await supabase.from('internships').select('*').eq('provider_id', profile.id).order('created_at', { ascending: false });
-    setInternships((jobs as Internship[]) ?? []);
-    const { data: applications } = await supabase
-      .from('applications')
-      .select('*, internship:internships(*)')
-      .in('internship_id', (jobs as Internship[])?.map((j) => j.id) ?? []);
-    const appList = (applications as unknown as Application[]) ?? [];
-    setApps(appList);
-    const studentIds = [...new Set(appList.map((a) => a.student_id))];
-    if (studentIds.length) {
-      const { data: studs } = await supabase.from('profiles').select('*').in('id', studentIds);
-      const map: Record<string, Profile> = {};
-      (studs as Profile[])?.forEach((s) => { map[s.id] = s; });
-      setStudents(map);
+    try {
+      const { internships: jobs } = await api.getInternships({ provider_id: profile.id });
+      setInternships(jobs);
+      const allApps: (Application & { student?: Profile })[] = [];
+      for (const job of jobs) {
+        const { applications } = await api.getApplications({ internship_id: job.id });
+        allApps.push(...applications as (Application & { student?: Profile })[]);
+      }
+      setApps(allApps);
+    } catch (err) {
+      console.error(err);
     }
     setLoading(false);
   };
@@ -43,28 +39,44 @@ export default function ProviderDashboardPage() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [profile?.id]);
 
   useEffect(() => {
-    if (profile) setCompanyForm({ company_name: profile.company_name ?? '', website: profile.website ?? '', domain: '' });
+    if (profile) setCompanyForm({ company_name: profile.company_name ?? '', website: profile.website ?? '' });
   }, [profile]);
 
   const verifyDomain = async (job: Internship) => {
     setVerifying(job.id);
-    const rawDomain = job.domain || companyForm.website || companyForm.domain;
+    const rawDomain = job.domain || companyForm.website;
     const clean = (rawDomain || '').replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '');
     const email = profile?.email ?? '';
     try {
-      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/validate-domain`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({ domain: clean, internship_id: job.id, email }),
-      });
-      if (!res.ok) throw new Error(`Verification failed (${res.status})`);
-      const data = await res.json();
-      if (!data.verified) {
-        alert(`Domain could not be fully verified (${data.score ?? '0/0'}). Checks: ${(data.checks ?? []).map((c: { check: string; detail: string }) => `${c.check}: ${c.detail}`).join(', ')}`);
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+      if (supabaseUrl && supabaseKey) {
+        const url = `${supabaseUrl}/functions/v1/validate-domain`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${supabaseKey}`,
+          },
+          body: JSON.stringify({ domain: clean, internship_id: job.id, email }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.verified) {
+            await api.updateInternship(job.id, {
+              domain_verified: true,
+              domain_verified_at: new Date().toISOString(),
+            });
+            await api.createHonourEvent(job.id, {
+              delta: 5,
+              reason: 'Domain verified',
+              severity: 'low',
+              source: 'domain',
+            });
+          } else {
+            alert(`Domain could not be fully verified (${data.score ?? '0/0'}).`);
+          }
+        }
       }
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Domain verification failed');
@@ -75,17 +87,17 @@ export default function ProviderDashboardPage() {
   };
 
   const updateAppStatus = async (appId: string, status: 'accepted' | 'rejected') => {
-    await supabase.from('applications').update({ status }).eq('id', appId);
+    await api.updateApplication(appId, status);
     load();
   };
 
   const saveProfile = async () => {
     if (!profile) return;
     setSavingProfile(true);
-    await supabase.from('profiles').update({
+    await api.updateProfile(profile.id, {
       company_name: companyForm.company_name,
       website: companyForm.website,
-    }).eq('id', profile.id);
+    });
     await refreshProfile();
     setSavingProfile(false);
   };
@@ -118,7 +130,6 @@ export default function ProviderDashboardPage() {
         </button>
       </div>
 
-      {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard label="Active listings" value={internships.filter((i) => i.status === 'active').length} icon={Briefcase} />
         <StatCard label="Total applicants" value={apps.length} icon={Users} />
@@ -127,7 +138,6 @@ export default function ProviderDashboardPage() {
       </div>
 
       <div className="grid lg:grid-cols-[1fr_320px] gap-6">
-        {/* Listings */}
         <div className="space-y-4">
           <div className="card p-5">
             <div className="flex items-center justify-between mb-4">
@@ -177,7 +187,6 @@ export default function ProviderDashboardPage() {
             )}
           </div>
 
-          {/* Applicants */}
           {filteredApps.length > 0 && (
             <div className="card p-5">
               <h2 className="font-bold text-ink-900 font-display mb-3">
@@ -185,7 +194,7 @@ export default function ProviderDashboardPage() {
               </h2>
               <div className="space-y-3">
                 {filteredApps.map((a) => {
-                  const student = students[a.student_id];
+                  const student = a.student;
                   return (
                     <div key={a.id} className="rounded-xl border border-ink-200 p-4">
                       <div className="flex items-start justify-between gap-3">
@@ -201,6 +210,9 @@ export default function ProviderDashboardPage() {
                         <span className={classNames('chip', statusColor(a.status))}>{a.status}</span>
                       </div>
                       {a.cover_letter && <p className="text-xs text-ink-500 mt-2 italic">"{a.cover_letter}"</p>}
+                      <div className="mt-2 rounded-lg bg-ink-50 p-2 max-h-32 overflow-y-auto">
+                        <pre className="text-xs font-mono text-ink-600 whitespace-pre-wrap">{a.resume_text}</pre>
+                      </div>
                       {a.status === 'pending' && (
                         <div className="flex gap-2 mt-3">
                           <button onClick={() => updateAppStatus(a.id, 'accepted')} className="btn-primary text-xs py-1.5">
@@ -219,7 +231,6 @@ export default function ProviderDashboardPage() {
           )}
         </div>
 
-        {/* Profile sidebar */}
         <aside className="space-y-4">
           <div className="card p-5">
             <h3 className="font-bold text-ink-900 font-display mb-3 flex items-center gap-2"><Building2 size={16} /> Company profile</h3>

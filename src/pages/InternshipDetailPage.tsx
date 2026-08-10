@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, MapPin, Clock, Users, Wallet, ShieldCheck, ShieldAlert, Flag, Send, Loader2, Building2, Mail, AlertTriangle, CheckCircle2 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useRouter } from '@/lib/router';
 import type { Internship, HonourEvent, Report, Application, Profile } from '@/lib/types';
@@ -30,24 +30,26 @@ export default function InternshipDetailPage({ id }: { id: string }) {
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      const { data: job } = await supabase.from('internships').select('*').eq('id', id).maybeSingle();
-      if (!job) {
-        setLoading(false);
-        return;
-      }
-      setInternship(job as Internship);
-      const jobRow = job as Internship;
-      const [prov, evs, reps] = await Promise.all([
-        supabase.from('profiles').select('*').eq('id', jobRow.provider_id).maybeSingle(),
-        supabase.from('honour_events').select('*').eq('internship_id', id).order('created_at', { ascending: false }),
-        supabase.from('reports').select('*').eq('internship_id', id).order('created_at', { ascending: false }),
-      ]);
-      setProvider(prov.data as Profile | null);
-      setEvents((evs.data as HonourEvent[]) ?? []);
-      setReports((reps.data as Report[]) ?? []);
-      if (profile?.role === 'student') {
-        const { data: app } = await supabase.from('applications').select('*').eq('internship_id', id).eq('student_id', profile.id).maybeSingle();
-        setExistingApp(app as Application | null);
+      try {
+        const { internship: job } = await api.getInternship(id);
+        if (!job) { setLoading(false); return; }
+        setInternship(job);
+        const [provRes, evsRes, repsRes] = await Promise.all([
+          api.getProfile(job.provider_id),
+          api.getHonourEvents(id),
+          api.getReports(id),
+        ]);
+        setProvider(provRes.profile);
+        setEvents(evsRes.events);
+        setReports(repsRes.reports);
+        if (profile?.role === 'student') {
+          try {
+            const { applications: apps } = await api.getApplications({ student_id: profile.id, internship_id: id });
+            setExistingApp(apps[0] ?? null);
+          } catch { /* ignore */ }
+        }
+      } catch (err) {
+        console.error(err);
       }
       setLoading(false);
     };
@@ -58,23 +60,17 @@ export default function InternshipDetailPage({ id }: { id: string }) {
     if (!profile || !internship) return;
     setSubmitting(true);
     setApplyError(null);
-    const { data, error } = await supabase
-      .from('applications')
-      .insert({
+    try {
+      const { application } = await api.createApplication({
         internship_id: internship.id,
-        student_id: profile.id,
         cover_letter: cover.trim(),
         resume_text: resume.trim(),
-      })
-      .select()
-      .single();
-    if (error) {
-      setApplyError(error.message);
-      setSubmitting(false);
-      return;
+      });
+      setExistingApp(application);
+      setApplySuccess(true);
+    } catch (err) {
+      setApplyError(err instanceof Error ? err.message : 'Failed to submit');
     }
-    setExistingApp(data as Application);
-    setApplySuccess(true);
     setSubmitting(false);
   };
 
@@ -123,7 +119,6 @@ export default function InternshipDetailPage({ id }: { id: string }) {
       )}
 
       <div className="grid lg:grid-cols-[1fr_300px] gap-6">
-        {/* Main */}
         <div className="space-y-5">
           <div className="card p-6">
             <div className="flex items-start justify-between gap-4 mb-3">
@@ -169,7 +164,6 @@ export default function InternshipDetailPage({ id }: { id: string }) {
             <p className="text-sm text-ink-600 whitespace-pre-wrap leading-relaxed">{internship.requirements || 'No specific requirements listed.'}</p>
           </div>
 
-          {/* Honour ledger */}
           <CollapsibleSection title="Honour score history" icon={<ShieldCheck size={16} className="text-brand-600" />} defaultOpen={false}>
             {events.length === 0 ? (
               <p className="text-sm text-ink-400">No honour events recorded yet. This listing has a clean record.</p>
@@ -190,7 +184,6 @@ export default function InternshipDetailPage({ id }: { id: string }) {
             )}
           </CollapsibleSection>
 
-          {/* Reports (visible to provider owner + admin) */}
           {(isOwner || profile?.is_admin) && reports.length > 0 && (
             <CollapsibleSection title={`Red-flag reports (${reports.length})`} icon={<Flag size={16} className="text-danger-600" />} defaultOpen={false}>
               <div className="space-y-2">
@@ -209,7 +202,6 @@ export default function InternshipDetailPage({ id }: { id: string }) {
           )}
         </div>
 
-        {/* Sidebar */}
         <aside className="space-y-4">
           <div className="card p-5">
             <p className="text-xs uppercase tracking-wide text-ink-400 font-semibold mb-2">Posted by</p>

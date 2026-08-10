@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Loader2, Sparkles, Send, ShieldCheck, AlertTriangle, CheckCircle2 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useRouter } from '@/lib/router';
 import { assessRisk, improveJobDescription, CATEGORY_OPTIONS, type ImproveResult } from '@/lib/ai';
@@ -52,10 +52,8 @@ export default function PostInternshipPage() {
     setSubmitting(true);
     setError(null);
     const assessment = assessRisk(aiInput);
-    const { data, error: insErr } = await supabase
-      .from('internships')
-      .insert({
-        provider_id: profile.id,
+    try {
+      const { internship } = await api.createInternship({
         title: form.title,
         company_name: form.company_name,
         domain: form.domain || null,
@@ -70,28 +68,21 @@ export default function PostInternshipPage() {
         category: form.category,
         status: 'active',
         risk_assessment: assessment,
-        risk_assessed_at: new Date().toISOString(),
-      })
-      .select()
-      .single();
-    if (insErr) {
-      setError(insErr.message);
-      setSubmitting(false);
-      return;
-    }
-    const newRow = data as { id: string };
-    if (assessment.score < 100) {
-      const totalDelta = assessment.score - 100;
-      await supabase.from('honour_events').insert({
-        internship_id: newRow.id,
-        delta: totalDelta,
-        reason: `AI review: ${assessment.flags.length} red flag${assessment.flags.length > 1 ? 's' : ''} at posting`,
-        severity: assessment.risk_level === 'critical' ? 'critical' : assessment.risk_level === 'high' ? 'high' : 'medium',
-        source: 'ai',
       });
+      if (assessment.score < 100) {
+        const totalDelta = assessment.score - 100;
+        await api.createHonourEvent(internship.id, {
+          delta: totalDelta,
+          reason: `AI review: ${assessment.flags.length} red flag${assessment.flags.length > 1 ? 's' : ''} at posting`,
+          severity: assessment.risk_level === 'critical' ? 'critical' : assessment.risk_level === 'high' ? 'high' : 'medium',
+          source: 'ai',
+        });
+      }
+      await refreshProfile();
+      setSuccessId(internship.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to post internship');
     }
-    await refreshProfile();
-    setSuccessId(newRow.id);
     setSubmitting(false);
   };
 
